@@ -6,16 +6,9 @@
 # Use euclidean distance to characterize functional trait differences on the random uniform niche axis.
 # Run one simulation whether the number of plant and insect species is the same, but I manipulate the potential for functional dissimilarity in the plants.
 
-library(tidyverse)
-
+#### OLD IDEA TO SIMULATE PLANT INDIVIDUALS AND THEN GROUP THEM INTO SPECIES. KEEP ON THE BACKBURNER ----
 ## specify number of plant individuals
 #n.plants <- 100
-
-## specify number of plant species
-n.plant.species <- 20
-
-## specify range of plant trait space
-max.trait.space <- seq(0.1, 1, 0.1)
 
 ## use random uniform distribution to simulate plant individuals in functional trait space.
 #plant.trait.distrib <- list()
@@ -33,27 +26,40 @@ max.trait.space <- seq(0.1, 1, 0.1)
 #str(functional.species)
 #functional.species[[1]]$cluster
 
+#### SETUP SIMULATION ----
+
+## load libraries
+library(tidyverse)
+library(bipartite) # also loads vegan which is required 
+library(visreg)
+library(cowplot) # loads ggplot
+
+## specify number of plant species
+n.plant.species <- 20
+
+## specify range of plant trait space to conduct simulations for
+max.trait.space <- seq(0.1, 1, 0.05)
+
 ## specify the number of insect species
 n.insect.species <- 20
 
-## proportion of specialists
-prop.specialists <- seq(0, 1, 0.1)
+## specify range of insect community structure (i.e. proportion of specialists)
+prop.specialists <- seq(0, 1, 0.05)
 
-## determine the range of trait space that specialist and generalist insects can interact with
+## arbitrarily specify the range of plant trait space that specialist and generalist insects can interact with
 specialist.degree <- 0.05
 generalist.degree <- 0.5
 
+## create all possible combinations of plant trait space and insect community structure
+plant.insect.combos <- data.frame(
+  expand.grid(plants.trait.space = max.trait.space, insect.community = prop.specialists)
+  )
 
-plant.insect.combos <- data.frame(expand.grid(plants.trait.space = max.trait.space, insect.community = prop.specialists)) %>%
-  filter(insect.community > 0.8 | insect.community < 0.6)
-
-## WHY WON'T THIS WORK WITH 0.7 and 0.6!?!?!?!
-
-## determine insect distributions in functional trait space
+#### CREATE PLANT AND INSECT DISTRIBUTIONS IN FUNCTIONAL TRAIT SPACE ----
 plant.insect.distrib <- list()
 for(i in 1:dim(plant.insect.combos)[1]){
   tmp.trait.space <- plant.insect.combos$plants.trait.space[i]
-  tmp.specialists <- n.insect.species*plant.insect.combos$insect.community[i]
+  tmp.specialists <- round(n.insect.species*plant.insect.combos$insect.community[i],0)
   tmp.generalists <- n.insect.species - tmp.specialists
   
   plant.insect.distrib[[i]] <- data.frame(
@@ -67,10 +73,8 @@ for(i in 1:dim(plant.insect.combos)[1]){
                              rep(generalist.degree, times = tmp.generalists))) %>%
     mutate(insect.max.trait = insect.trait + insect.niche.breadth) # not constrained within max.trait.space
 }
-#insect.distrib.df <- plyr::ldply(insect.distrib)
 
-## determine whether an interaction can occur or not.
-
+#### DETERMINE WHETHER AN INTERACTION CAN OCCUR OR NOT ----
 web.list <- list()
 for(i in 1:length(plant.insect.distrib)){
   tmp.web <- plant.insect.distrib[[i]]
@@ -94,9 +98,10 @@ for(i in 1:length(plant.insect.distrib)){
 # function to create bipartite matrix
 special.spread <- function(x) spread(select(x, -plant.trait, -insect.trait, -insect.max.trait), key = insect.species, value = link) %>% select(-plant.species)
 
+# generate interaction matrices
 make.webs <- lapply(web.list, FUN = special.spread)
 
-## CALCULATE NETWORK METRICS FOR EACH WEB
+#### CALCULATE NETWORK METRICS FOR EACH WEB ----
 web.complexity <- lapply(make.webs, FUN = function(x) networklevel(x, index = c("connectance")))
 
 web.NODF <- lapply(make.webs, FUN = function(x) nestednodf(x)$statistic[3])
@@ -109,14 +114,78 @@ model.predictions <- data.frame(plant.insect.combos,
                                 NODF = plyr::ldply(web.NODF)$NODF,
                                 Modularity = plyr::ldply(web.modularity)$V1)
 
-with(model.predictions, cor.test(Modularity, NODF)) # very strong negative correlation
+#model.ggplot <- select(model.predictions, -Connectance) %>% 
+#  gather(key = Network_Metric, value = Network_Value, NODF, Modularity)
+
+#plot(Modularity ~ NODF, model.predictions)
+#plot(Modularity ~ Connectance, model.predictions)
+#plot(NODF ~ Connectance, model.predictions)
+
+## still a trade-off between nestedness and modularity after controlling for connectance
+#network.lm <- lm(Modularity ~ log(Connectance) + log(NODF), model.predictions)
+#visreg(network.lm)
+#summary(network.lm)
+#plot(network.lm)
+
+## NEED TO THINK ABOUT SOMETYPE OF MODEL LIKE THIS IS WORTH DOING.
+#predict.network <- lm(NODF ~ log(Connectance) + plants.trait.space*insect.community, model.predictions)
+#visreg(predict.network)
+#summary(predict.network)
+#plot(predict.network)
+
+
+NODF.plot <- ggplot(model.predictions, aes(x = plants.trait.space, y = insect.community, fill = NODF)) +
+  geom_raster(interpolate = TRUE) + scale_fill_gradient2(midpoint = median(model.predictions$NODF), low = "#56B4E9", high = "#D55E00") +
+  scale_x_continuous(breaks = c(0.1,0.25,0.5,0.75,1), labels = c(0.1, 0.25, 0.5, 0.75, 1.0)) +
+  xlab("Plant Functional Diversity") +
+  ylab("Proportion of Specialist Animals") 
+
+NODF.Mod.cor <- ggplot(model.predictions, aes(x = NODF, y = Modularity)) + geom_point()
+
+#ggplot(model.predictions, aes(x = plants.trait.space, y = insect.community, fill = Connectance)) +
+#  geom_tile() + scale_fill_gradient2(low = "white", high = "red")
+
+Mod.plot <- ggplot(model.predictions, aes(x = plants.trait.space, y = insect.community, fill = Modularity)) +
+  geom_raster(interpolate = TRUE) + scale_fill_gradient2(midpoint = median(model.predictions$Modularity), low = "#56B4E9", high = "#D55E00") +
+  scale_x_continuous(breaks = c(0.1,0.25,0.5,0.75,1), labels = c(0.1, 0.25, 0.5, 0.75, 1.0)) +
+  xlab("Plant Functional Diversity") +
+  ylab("")
+  #ylab("Proportion of Specialist Animals")
+
+fig_2 <- plot_grid(NODF.plot, Mod.plot, nrow = 1, labels = "AUTO", align = "hv")
+#first <- plot_grid(NODF.plot, Mod.plot, nrow = 2, labels = c("A","C"), align = "hv")
+#fig_1 <- plot_grid(first, NODF.Mod.cor, labels = c("","B"))
+save_plot("fig_2.png", fig_2, base_height = 6, base_width = 8.5)
 
 ## Null Model Analysis ----
-library(vegan)
 
 # nestedness
-nested.test <- lapply(make.webs, FUN = function(x) oecosimu(x, nestednodf, method = "quasiswap", nsimul = 1000))
+nested.test <- lapply(make.webs, FUN = function(x) oecosimu(x, nestednodf, method = "quasiswap", nsimul = 100))
+nested.zscores <- plyr::ldply(lapply(nested.test, FUN = function(x) x$oecosimu$z["NODF"]))$NODF
+nested.pvalues <- plyr::ldply(lapply(nested.test, FUN = function(x) x$oecosimu$pval[3]))$V1
 
 # modularity
 QuaBiMod <- function(x) computeModules(x)@likelihood
-modularity.test <- lapply(make.webs, FUN = function(x) oecosimu(x, QuaBiMod, method = "quasiswap", nsimul = 1000)) 
+modularity.test <- lapply(make.webs, FUN = function(x) oecosimu(x, QuaBiMod, method = "quasiswap", nsimul = 100)) 
+
+modularity.zscores <- plyr::ldply(lapply(modularity.test, FUN = function(x) x$oecosimu$z))$V1
+modularity.pvalues <- plyr::ldply(lapply(modularity.test, FUN = function(x) x$oecosimu$pval))$V1
+
+# merge z-scores and p-values into model predictions
+model.results <- cbind(model.predictions, 
+                       NODF.zscores = nested.zscores, NODF.pvalues = nested.pvalues,
+                       mod.zscores = modularity.zscores, mod.pvalues = modularity.pvalues)
+
+## INTERESTING, IT APPEARS THAT MODULARITY IS QUITE PROBABLE, BUT SIGNIFICANT NESTEDNESS DOES NOT HAPPEN IN THIS HEURISTIC MODEL...I WONDER WHY??? ESPECIALLY, SINCE IT CAN GENERATE HIGHLY NESTED NETWORKS.
+## PERHAPS THIS IS AN ARTIFACT OF ALL OF THE GENERALISTS BEING THE SAME, WITH NO GRADIENT IN HOW GENERALIST SPECIES ARE, WHICH WOULD CREATE THE NESTED PATTERN...
+
+## checking validity of the null models
+#test <- simulate(vegan::nullmodel(make.webs[[1]], method = "quasiswap"), nsim = 1)
+
+#library(metacom)
+#NullMaker(make.webs[[1]], sims = 10, method = "tswap")
+
+#nullmodel(make.webs[[1]], N = 2, method = "mgen", rep.cell = FALSE)
+
+#nestednodf(mgen(as.matrix(make.webs[[1]]), rep.cell = FALSE))
+#nestednodf(as.matrix(make.webs[[1]]))
